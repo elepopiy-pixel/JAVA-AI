@@ -224,7 +224,6 @@ function startLlamaServer() {
         "--batch-size", "32",
         "--ubatch-size", "16",
         "--no-mmap",
-        "--mlock", "0"
     ];
 
     console.log("🦙 llama-server başlatılıyor...");
