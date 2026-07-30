@@ -1,19 +1,18 @@
 {
-  "name": "java-ai",
+  "name": "java-ai-local-coder",
   "version": "1.0.0",
-  "description": "☕ Java AI - Java ve JavaScript uzmanı yapay zeka asistanı",
+  "description": "Groq kullanmadan çalışan yerel 360M GGUF coder chatbot",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js"
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
-    "cors": "^2.8.6",
-    "dotenv": "^16.6.1",
-    "express": "^4.22.2",
-    "groq-sdk": "^1.4.1",
-    "openai": "^4.104.0"
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
   }
 }
