@@ -1,1 +1,549 @@
-# Kendi kod bilgi satırlarını buraya ekle.
+================================================================================
+JAVA & MULTI-LANGUAGE CODE DATASET FOR AI TRAINING AND PATTERN RECOGNITION
+================================================================================
+Target Languages: Java (Primary), TypeScript, JavaScript, HTML5
+Focus Areas: Concurrency, Design Patterns, Enterprise Web Architecture,
+             Data Structures, Functional Programming, Modern Syntax.
+================================================================================
+
+
+================================================================================
+SECTION 1: JAVA CONCURRENCY & ASYNCHRONOUS PIPELINE (JAVA 17+)
+================================================================================
+
+package com.ai.training.pipeline;
+
+import java.time.Instant;
+import java.util.Objects;
+import java.util.concurrent.*;
+import java.util.logging.Logger;
+
+/**
+ * Thread-safe asynchronous execution engine demonstrating Java 17 Records,
+ * CompletableFuture composition, Generic Types, and Exception Handling.
+ */
+public class AsyncDataPipeline {
+
+    public record WorkItem<T>(String id, T payload, Instant timestamp) {
+        public WorkItem {
+            Objects.requireNonNull(id, "WorkItem ID cannot be null.");
+            Objects.requireNonNull(payload, "WorkItem payload cannot be null.");
+            if (timestamp == null) {
+                timestamp = Instant.now();
+            }
+        }
+    }
+
+    public record ProcessResult<R>(String itemId, R data, boolean isSuccess, String errorMessage) {
+        public static <R> ProcessResult<R> success(String itemId, R data) {
+            return new ProcessResult<>(itemId, data, true, null);
+        }
+
+        public static <R> ProcessResult<R> failure(String itemId, String errorMessage) {
+            return new ProcessResult<>(itemId, null, false, errorMessage);
+        }
+    }
+
+    @FunctionalInterface
+    public interface TaskProcessor<I, O> {
+        O process(I input) throws Exception;
+    }
+
+    public static class PipelineEngine<I, O> {
+        private static final Logger LOGGER = Logger.getLogger(PipelineEngine.class.getName());
+        private final ExecutorService executorService;
+        private final TaskProcessor<I, O> processor;
+
+        public PipelineEngine(int poolSize, TaskProcessor<I, O> processor) {
+            this.executorService = Executors.newFixedThreadPool(poolSize);
+            this.processor = Objects.requireNonNull(processor, "Processor cannot be null.");
+        }
+
+        public CompletableFuture<ProcessResult<O>> submit(WorkItem<I> item) {
+            return CompletableFuture.supplyAsync(() -> {
+                LOGGER.info(() -> "Processing Task ID: " + item.id());
+                try {
+                    O result = processor.process(item.payload());
+                    LOGGER.info(() -> "Task Completed Successfully ID: " + item.id());
+                    return ProcessResult.success(item.id(), result);
+                } catch (Exception e) {
+                    LOGGER.severe(() -> "Task Execution Failed ID: " + item.id() + " - " + e.getMessage());
+                    return ProcessResult.failure(item.id(), e.getMessage());
+                }
+            }, executorService);
+        }
+
+        public void shutdown() {
+            executorService.shutdown();
+            try {
+                if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+                    executorService.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executorService.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        TaskProcessor<String, Integer> wordCounter = text -> {
+            if (text.contains("INVALID")) {
+                throw new IllegalArgumentException("Payload contains invalid content.");
+            }
+            return text.trim().split("\s+").length;
+        };
+
+        PipelineEngine<String, Integer> engine = new PipelineEngine<>(2, wordCounter);
+
+        WorkItem<String> task1 = new WorkItem<>("TASK-101", "Java microservices scale horizontally with containers.", Instant.now());
+        WorkItem<String> task2 = new WorkItem<>("TASK-102", "INVALID payload test trigger", Instant.now());
+
+        CompletableFuture<ProcessResult<Integer>> f1 = engine.submit(task1);
+        CompletableFuture<ProcessResult<Integer>> f2 = engine.submit(task2);
+
+        CompletableFuture.allOf(f1, f2).join();
+
+        f1.thenAccept(res -> System.out.println("Result 1 Success: " + res.isSuccess() + ", Words: " + res.data()));
+        f2.thenAccept(res -> System.out.println("Result 2 Success: " + res.isSuccess() + ", Error: " + res.errorMessage()));
+
+        engine.shutdown();
+    }
+}
+
+
+================================================================================
+SECTION 2: ENTERPRISE REST API ARCHITECTURE (SPRING BOOT PATTERN)
+================================================================================
+
+package com.ai.training.ecommerce.model;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+public record Product(
+    String id,
+    String name,
+    String sku,
+    BigDecimal price,
+    int stockQuantity,
+    LocalDateTime createdAt
+) {}
+
+
+package com.ai.training.ecommerce.dto;
+
+import java.math.BigDecimal;
+
+public record CreateProductRequest(
+    String name,
+    String sku,
+    BigDecimal price,
+    int stockQuantity
+) {}
+
+
+package com.ai.training.ecommerce.exception;
+
+public class ProductNotFoundException extends RuntimeException {
+    public ProductNotFoundException(String id) {
+        super("Product with ID '" + id + "' was not found.");
+    }
+}
+
+
+package com.ai.training.ecommerce.repository;
+
+import com.ai.training.ecommerce.model.Product;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class ProductRepository {
+    private final Map<String, Product> database = new ConcurrentHashMap<>();
+
+    public Product save(Product product) {
+        database.put(product.id(), product);
+        return product;
+    }
+
+    public Optional<Product> findById(String id) {
+        return Optional.ofNullable(database.get(id));
+    }
+
+    public List<Product> findAll() {
+        return new ArrayList<>(database.values());
+    }
+
+    public boolean deleteById(String id) {
+        return database.remove(id) != null;
+    }
+}
+
+
+package com.ai.training.ecommerce.service;
+
+import com.ai.training.ecommerce.dto.CreateProductRequest;
+import com.ai.training.ecommerce.exception.ProductNotFoundException;
+import com.ai.training.ecommerce.model.Product;
+import com.ai.training.ecommerce.repository.ProductRepository;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+public class ProductService {
+    private final ProductRepository productRepository;
+
+    public ProductService(ProductRepository productRepository) {
+        this.productRepository = productRepository;
+    }
+
+    public Product createProduct(CreateProductRequest request) {
+        String generatedId = UUID.randomUUID().toString();
+        Product product = new Product(
+            generatedId,
+            request.name(),
+            request.sku(),
+            request.price(),
+            request.stockQuantity(),
+            LocalDateTime.now()
+        );
+        return productRepository.save(product);
+    }
+
+    public Product getProductById(String id) {
+        return productRepository.findById(id)
+            .orElseThrow(() -> new ProductNotFoundException(id));
+    }
+
+    public List<Product> getAllProducts() {
+        return productRepository.findAll();
+    }
+}
+
+
+================================================================================
+SECTION 3: ADVANCED DATA STRUCTURE - LRU CACHE WITH GENERICS
+================================================================================
+
+package com.ai.training.datastructures;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * Thread-safe Least Recently Used (LRU) Cache implementation using 
+ * Doubly Linked List and HashMap.
+ */
+public class LRUCache<K, V> {
+
+    private final int capacity;
+    private final Map<K, Node<K, V>> map;
+    private final Node<K, V> head;
+    private final Node<K, V> tail;
+
+    private static class Node<K, V> {
+        K key;
+        V value;
+        Node<K, V> prev;
+        Node<K, V> next;
+
+        Node(K key, V value) {
+            this.key = key;
+            this.value = value;
+        }
+    }
+
+    public LRUCache(int capacity) {
+        if (capacity <= 0) throw new IllegalArgumentException("Capacity must be positive.");
+        this.capacity = capacity;
+        this.map = new HashMap<>();
+        
+        this.head = new Node<>(null, null);
+        this.tail = new Node<>(null, null);
+        head.next = tail;
+        tail.prev = head;
+    }
+
+    public synchronized V get(K key) {
+        Node<K, V> node = map.get(key);
+        if (node == null) return null;
+        moveToHead(node);
+        return node.value;
+    }
+
+    public synchronized void put(K key, V value) {
+        Node<K, V> node = map.get(key);
+        if (node != null) {
+            node.value = value;
+            moveToHead(node);
+        } else {
+            if (map.size() >= capacity) {
+                Node<K, V> tailNode = removeTail();
+                if (tailNode != null) {
+                    map.remove(tailNode.key);
+                }
+            }
+            Node<K, V> newNode = new Node<>(key, value);
+            map.put(key, newNode);
+            addNode(newNode);
+        }
+    }
+
+    private void addNode(Node<K, V> node) {
+        node.next = head.next;
+        node.prev = head;
+        head.next.prev = node;
+        head.next = node;
+    }
+
+    private void removeNode(Node<K, V> node) {
+        node.prev.next = node.next;
+        node.next.prev = node.prev;
+    }
+
+    private void moveToHead(Node<K, V> node) {
+        removeNode(node);
+        addNode(node);
+    }
+
+    private Node<K, V> removeTail() {
+        Node<K, V> res = tail.prev;
+        if (res == head) return null;
+        removeNode(res);
+        return res;
+    }
+}
+
+
+================================================================================
+SECTION 4: GOF DESIGN PATTERNS IN JAVA
+================================================================================
+
+// --- 1. OBSERVER PATTERN ---
+package com.ai.training.patterns.observer;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public interface EventObserver {
+    void onEvent(String eventType, String data);
+}
+
+public class EventPublisher {
+    private final List<EventObserver> observers = new ArrayList<>();
+
+    public void subscribe(EventObserver observer) {
+        observers.add(observer);
+    }
+
+    public void unsubscribe(EventObserver observer) {
+        observers.remove(observer);
+    }
+
+    public void notifyObservers(String eventType, String data) {
+        for (EventObserver observer : observers) {
+            observer.onEvent(eventType, data);
+        }
+    }
+}
+
+
+// --- 2. BUILDER PATTERN ---
+package com.ai.training.patterns.builder;
+
+public class HTTPClientConfig {
+    private final String baseUrl;
+    private final int timeoutMs;
+    private final boolean followRedirects;
+    private final String userAgent;
+
+    private HTTPClientConfig(Builder builder) {
+        this.baseUrl = builder.baseUrl;
+        this.timeoutMs = builder.timeoutMs;
+        this.followRedirects = builder.followRedirects;
+        this.userAgent = builder.userAgent;
+    }
+
+    public static class Builder {
+        private String baseUrl;
+        private int timeoutMs = 5000;
+        private boolean followRedirects = true;
+        private String userAgent = "AI-Java-Client/1.0";
+
+        public Builder setBaseUrl(String baseUrl) {
+            this.baseUrl = baseUrl;
+            return this;
+        }
+
+        public Builder setTimeoutMs(int timeoutMs) {
+            this.timeoutMs = timeoutMs;
+            return this;
+        }
+
+        public Builder setFollowRedirects(boolean followRedirects) {
+            this.followRedirects = followRedirects;
+            return this;
+        }
+
+        public Builder setUserAgent(String userAgent) {
+            this.userAgent = userAgent;
+            return this;
+        }
+
+        public HTTPClientConfig build() {
+            if (baseUrl == null || baseUrl.isEmpty()) {
+                throw new IllegalStateException("Base URL is required.");
+            }
+            return new HTTPClientConfig(this);
+        }
+    }
+}
+
+
+================================================================================
+SECTION 5: TYPESCRIPT & FRONTEND INTEROP CODE SAMPLES
+================================================================================
+
+/**
+ * TypeScript API Client Wrapper for AI Model Fine-tuning Metrics Monitoring
+ */
+
+export interface MetricEntry {
+    timestamp: number;
+    loss: number;
+    accuracy: number;
+    epoch: number;
+}
+
+export interface TrainingResponse {
+    jobId: string;
+    status: 'RUNNING' | 'COMPLETED' | 'FAILED';
+    metrics: MetricEntry[];
+}
+
+export class ModelTrainingClient {
+    private readonly baseUrl: string;
+
+    constructor(baseUrl: string) {
+        this.baseUrl = baseUrl;
+    }
+
+    public async fetchMetrics(jobId: string): Promise<TrainingResponse> {
+        const response = await fetch(`${this.baseUrl}/api/v1/jobs/${jobId}/metrics`, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch training metrics. Status code: ${response.status}`);
+        }
+
+        return await response.json() as TrainingResponse;
+    }
+
+    public renderProgressConsole(response: TrainingResponse): void {
+        console.log(`[Job Status]: ${response.jobId} -> ${response.status}`);
+        response.metrics.forEach(m => {
+            console.log(`Epoch ${m.epoch} | Loss: ${m.loss.toFixed(4)} | Accuracy: ${(m.accuracy * 100).toFixed(2)}%`);
+        });
+    }
+}
+
+
+================================================================================
+SECTION 6: SEMANTIC HTML5 & CSS STYLING DRAFT FOR DASHBOARD
+================================================================================
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Training Pipeline Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-primary: #f8fafc;
+            --accent-green: #22c55e;
+            --accent-blue: #38bdf8;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .metric-card {
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+            border: 1px solid #334155;
+        }
+
+        .metric-title {
+            color: #94a3b8;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-top: 8px;
+            color: var(--accent-blue);
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background-color: rgba(34, 197, 94, 0.2);
+            color: var(--accent-green);
+        }
+    </style>
+</head>
+<body>
+    <header style="text-align: center; margin-bottom: 40px;">
+        <h1>AI Model Training & Pipeline Metrics</h1>
+        <p style="color: #94a3b8;">Real-time Java Engine Synchronization Dashboard</p>
+    </header>
+
+    <main class="dashboard-grid">
+        <article class="metric-card">
+            <div class="metric-title">Pipeline Status</div>
+            <div class="metric-value"><span class="status-badge">ACTIVE</span></div>
+        </article>
+        <article class="metric-card">
+            <div class="metric-title">Active Workers</div>
+            <div class="metric-value">16 Threads</div>
+        </article>
+        <article class="metric-card">
+            <div class="metric-title">Processed Tasks</div>
+            <div class="metric-value">1,482,900</div>
+        </article>
+    </main>
+</body>
+</html>
+================================================================================
+END OF CODE DATASET
+================================================================================
