@@ -114,7 +114,7 @@ app.post("/api/chat", async (req, res) => {
         try {
             const completion = await groq.chat.completions.create({
                 messages: messagesForGroq,
-                model: "llama-3.3-70b-versatile",
+                model: "llama-3.1-8b-instant",
                 temperature: 0.7,
                 max_tokens: 4000 // Kod yazacağı için limit yüksek tutuldu
             });
