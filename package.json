@@ -2,7 +2,7 @@
   "name": "java-ai",
   "version": "1.0.0",
   "description": "☕ Java AI - Java ve JavaScript uzmanı yapay zeka asistanı",
-  "main": "index.js",
+  "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node index.js",
