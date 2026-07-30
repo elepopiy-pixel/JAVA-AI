@@ -1,5 +1,5 @@
 node_modules
-npm-debug.log
+npm-debug.log*
 .env
 .git
 .gitignore
@@ -7,3 +7,4 @@ npm-debug.log
 models
 llama.cpp
 *.gguf
+README.md

@@ -5,220 +5,161 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
-const dotenv = require("dotenv");
-
-dotenv.config();
 
 const app = express();
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 10000);
 const LLAMA_PORT = Number(process.env.LLAMA_PORT || 8080);
 const LLAMA_HOST = "127.0.0.1";
 
 const LLAMA_SERVER_PATH =
-    process.env.LLAMA_SERVER_PATH ||
-    path.join(
-        __dirname,
-        "llama.cpp",
-        "build",
-        "bin",
-        "llama-server"
-    );
+    process.env.LLAMA_SERVER_PATH || "/usr/local/bin/llama-server";
 
-// 360M tabanlı coder model.
-// Q2_K yaklaşık 219 MB olduğundan 512 MB ortam için en olası sürümdür.
 const MODEL_REPOSITORY =
     process.env.MODEL_REPOSITORY ||
     "mradermacher/SolaraV2-coder-GGUF";
 
-const MODEL_QUANT =
-    process.env.MODEL_QUANT ||
-    "Q2_K";
-
+const MODEL_QUANT = process.env.MODEL_QUANT || "Q2_K";
 const MODEL_REFERENCE = `${MODEL_REPOSITORY}:${MODEL_QUANT}`;
 
-const LLAMA_CONTEXT_SIZE = Number(
-    process.env.LLAMA_CONTEXT_SIZE || 1024
+const LLAMA_CONTEXT_SIZE = positiveInteger(
+    process.env.LLAMA_CONTEXT_SIZE,
+    768
 );
 
-const LLAMA_THREADS = Number(
-    process.env.LLAMA_THREADS || 2
+const LLAMA_THREADS = positiveInteger(
+    process.env.LLAMA_THREADS,
+    1
 );
 
-const MAX_OUTPUT_TOKENS = Number(
-    process.env.MAX_OUTPUT_TOKENS || 256
+const MAX_OUTPUT_TOKENS = positiveInteger(
+    process.env.MAX_OUTPUT_TOKENS,
+    192
 );
 
-const MAX_HISTORY_MESSAGES = Number(
-    process.env.MAX_HISTORY_MESSAGES || 8
+const MAX_HISTORY_MESSAGES = positiveInteger(
+    process.env.MAX_HISTORY_MESSAGES,
+    6
 );
 
-const LLAMA_API_URL =
-    `http://${LLAMA_HOST}:${LLAMA_PORT}`;
+const LLAMA_API_URL = `http://${LLAMA_HOST}:${LLAMA_PORT}`;
 
 let llamaProcess = null;
 let llamaReady = false;
 let llamaStarting = false;
+let lastLlamaError = null;
 
-// =================================
-// MIDDLEWARE
-// =================================
+function positiveInteger(value, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
+app.disable("x-powered-by");
 app.use(cors());
-
-app.use(
-    express.json({
-        limit: "2mb"
-    })
-);
-
-app.use(
-    express.static(
-        path.join(__dirname, "public")
-    )
-);
+app.use(express.json({ limit: "2mb" }));
+app.use(express.static(path.join(__dirname, "public")));
 
 // =================================
-// VERİ.TXT OKUMA
+// veri.txt
 // =================================
 
-// 512 MB RAM ve 1024 context nedeniyle veri.txt'nin
-// tamamını her istekte modele göndermiyoruz.
 let codeKnowledgeLines = [];
 
 try {
     const veriPath = path.join(__dirname, "veri.txt");
 
     if (fs.existsSync(veriPath)) {
-        const content = fs.readFileSync(veriPath, "utf8");
-
-        codeKnowledgeLines = content
+        codeKnowledgeLines = fs
+            .readFileSync(veriPath, "utf8")
             .split(/\r?\n/)
-            .map(line => line.trim())
+            .map((line) => line.trim())
             .filter(Boolean);
 
         console.log(
             `📄 veri.txt okundu: ${codeKnowledgeLines.length} satır`
         );
     } else {
-        console.warn(
-            "⚠️ veri.txt bulunamadı. Bilgi tabanı olmadan devam ediliyor."
-        );
+        console.warn("⚠️ veri.txt bulunamadı.");
     }
 } catch (error) {
-    console.error(
-        "❌ veri.txt okunamadı:",
-        error.message
-    );
+    console.error("❌ veri.txt okunamadı:", error.message);
 }
 
-// =================================
-// BASİT BİLGİ ARAMA
-// =================================
-
-function normalizeText(text) {
-    return String(text || "")
+function normalizeText(value) {
+    return String(value || "")
         .toLocaleLowerCase("tr-TR")
         .replace(/[^\p{L}\p{N}_+#.-]+/gu, " ")
         .trim();
 }
 
-function findRelevantKnowledge(query, maximumLines = 12) {
-    if (
-        !query ||
-        codeKnowledgeLines.length === 0
-    ) {
+function findRelevantKnowledge(query, limit = 8) {
+    if (!query || codeKnowledgeLines.length === 0) {
         return "";
     }
 
-    const ignoredWords = new Set([
-        "bir",
-        "bu",
-        "şu",
-        "ve",
-        "veya",
-        "ile",
-        "için",
-        "nasıl",
-        "nedir",
-        "olan",
-        "bana",
-        "kod",
-        "yaz",
-        "yapar",
-        "yap"
+    const ignored = new Set([
+        "bir", "bu", "şu", "ve", "veya", "ile", "için",
+        "nasıl", "nedir", "olan", "bana", "kod", "yaz",
+        "yap", "yapar", "mi", "mı", "mu", "mü"
     ]);
 
     const words = normalizeText(query)
         .split(/\s+/)
-        .filter(word => word.length >= 3)
-        .filter(word => !ignoredWords.has(word));
+        .filter((word) => word.length >= 3 && !ignored.has(word));
 
     if (words.length === 0) {
         return "";
     }
 
-    const scoredLines = codeKnowledgeLines
-        .map(line => {
-            const normalizedLine = normalizeText(line);
-
+    return codeKnowledgeLines
+        .map((line) => {
+            const normalized = normalizeText(line);
             let score = 0;
 
             for (const word of words) {
-                if (normalizedLine.includes(word)) {
+                if (normalized.includes(word)) {
                     score += 1;
                 }
             }
 
-            return {
-                line,
-                score
-            };
+            return { line, score };
         })
-        .filter(item => item.score > 0)
+        .filter((item) => item.score > 0)
         .sort((a, b) => b.score - a.score)
-        .slice(0, maximumLines);
-
-    if (scoredLines.length === 0) {
-        return "";
-    }
-
-    // Promptun aşırı büyümesini engelle.
-    return scoredLines
-        .map(item => item.line)
+        .slice(0, limit)
+        .map((item) => item.line)
         .join("\n")
-        .slice(0, 5000);
+        .slice(0, 3000);
 }
-
-// =================================
-// SİSTEM PROMPTU
-// =================================
 
 function createSystemPrompt(knowledge) {
     let prompt = `
 Sen Java AI'sın.
+Kahve temalı, kısa ve doğrudan cevap veren bir yazılım asistanısın.
 
-Kahve temalı bir yazılım asistanısın.
-Özellikle Java, JavaScript, TypeScript, HTML, CSS ve Node.js alanlarında yardımcı olursun.
+Uzmanlıkların:
+- Java
+- JavaScript
+- TypeScript
+- HTML ve CSS
+- Node.js
+- Hata ayıklama
 
 Kurallar:
-- Kısa ve net cevap ver.
-- İstenen kodu doğrudan üret.
-- Var olmayan kütüphaneler uydurma.
-- Kodda hata varsa düzelt.
-- Küçük bir model olduğun için karmaşık işi parçalara ayır.
-- Gereksiz uzun açıklamalar yapma.
 - Türkçe cevap ver.
-- Kullanıcının önceki mesaj bağlamını mümkün olduğunca koru.
+- İstenen kodu doğrudan üret.
+- Var olmayan paket veya API uydurma.
+- Kod kısa değilse gerekli dosya adlarını belirt.
+- Kullanıcının son mesajlarına göre bağlamı koru.
+- Gereksiz uzun açıklama yapma.
+- Bilmediğin konuda kesin konuşma.
 `.trim();
 
     if (knowledge) {
         prompt += `
 
-Aşağıdaki bilgi veri.txt içinden seçilmiştir.
-Yalnızca soruyla alakalıysa kullan:
-
---- İLGİLİ BİLGİ ---
+Aşağıdaki bilgi veri.txt içinden soruya göre seçildi:
+--- BİLGİ ---
 ${knowledge}
 --- BİLGİ SONU ---`;
     }
@@ -226,208 +167,24 @@ ${knowledge}
     return prompt;
 }
 
-// =================================
-// LLAMA SERVER YÖNETİMİ
-// =================================
-
-function startLlamaServer() {
-    if (llamaProcess || llamaStarting) {
-        return;
-    }
-
-    llamaStarting = true;
-    llamaReady = false;
-
-    if (!fs.existsSync(LLAMA_SERVER_PATH)) {
-        console.error(
-            "❌ llama-server bulunamadı:",
-            LLAMA_SERVER_PATH
-        );
-
-        llamaStarting = false;
-        return;
-    }
-
-    console.log("🦙 llama-server başlatılıyor...");
-    console.log(`🤖 Model: ${MODEL_REFERENCE}`);
-    console.log(`🧠 Context: ${LLAMA_CONTEXT_SIZE}`);
-    console.log(`🧵 Thread: ${LLAMA_THREADS}`);
-
-    const argumentsList = [
-        "-hf",
-        MODEL_REFERENCE,
-
-        "--host",
-        LLAMA_HOST,
-
-        "--port",
-        String(LLAMA_PORT),
-
-        "--ctx-size",
-        String(LLAMA_CONTEXT_SIZE),
-
-        "--threads",
-        String(LLAMA_THREADS),
-
-        "--threads-batch",
-        String(LLAMA_THREADS),
-
-        "--parallel",
-        "1",
-
-        "--batch-size",
-        "64",
-
-        "--ubatch-size",
-        "32",
-
-        "--no-mmap"
-    ];
-
-    llamaProcess = spawn(
-        LLAMA_SERVER_PATH,
-        argumentsList,
-        {
-            cwd: __dirname,
-            stdio: [
-                "ignore",
-                "pipe",
-                "pipe"
-            ],
-            env: {
-                ...process.env,
-
-                // Model indirme klasörü.
-                LLAMA_CACHE:
-                    process.env.LLAMA_CACHE ||
-                    path.join(__dirname, ".llama-cache")
-            }
-        }
-    );
-
-    llamaProcess.stdout.on("data", data => {
-        const output = data.toString().trim();
-
-        if (output) {
-            console.log(`[LLAMA] ${output}`);
-        }
-    });
-
-    llamaProcess.stderr.on("data", data => {
-        const output = data.toString().trim();
-
-        if (output) {
-            console.log(`[LLAMA] ${output}`);
-        }
-    });
-
-    llamaProcess.on("error", error => {
-        console.error(
-            "❌ llama-server başlatılamadı:",
-            error.message
-        );
-
-        llamaProcess = null;
-        llamaReady = false;
-        llamaStarting = false;
-    });
-
-    llamaProcess.on("close", code => {
-        console.error(
-            `⚠️ llama-server kapandı. Kod: ${code}`
-        );
-
-        llamaProcess = null;
-        llamaReady = false;
-        llamaStarting = false;
-    });
-
-    waitForLlamaServer()
-        .then(() => {
-            llamaReady = true;
-            llamaStarting = false;
-
-            console.log(
-                "✅ Yerel 360M Coder modeli hazır."
-            );
-        })
-        .catch(error => {
-            llamaReady = false;
-            llamaStarting = false;
-
-            console.error(
-                "❌ Model hazır duruma gelemedi:",
-                error.message
-            );
-        });
-}
-
-async function waitForLlamaServer() {
-    const maximumAttempts = 180;
-
-    for (
-        let attempt = 1;
-        attempt <= maximumAttempts;
-        attempt++
-    ) {
-        try {
-            const response = await fetch(
-                `${LLAMA_API_URL}/health`,
-                {
-                    signal: AbortSignal.timeout(3000)
-                }
-            );
-
-            if (response.ok) {
-                return;
-            }
-        } catch {
-            // Model hâlâ indiriliyor veya yükleniyor olabilir.
-        }
-
-        if (attempt % 10 === 0) {
-            console.log(
-                `⏳ Model bekleniyor... ${attempt}/${maximumAttempts}`
-            );
-        }
-
-        await new Promise(resolve =>
-            setTimeout(resolve, 2000)
-        );
-    }
-
-    throw new Error(
-        "llama-server zamanında hazır olmadı."
-    );
-}
-
-// =================================
-// MESAJ TEMİZLEME
-// =================================
-
 function sanitizeHistory(history) {
     return history
-        .filter(message => {
-            return (
+        .filter(
+            (message) =>
                 message &&
                 typeof message === "object" &&
                 ["user", "assistant"].includes(message.role) &&
                 typeof message.content === "string"
-            );
-        })
-        .map(message => ({
+        )
+        .map((message) => ({
             role: message.role,
-            content: message.content.slice(0, 6000)
+            content: message.content.slice(0, 4000)
         }))
         .slice(-MAX_HISTORY_MESSAGES);
 }
 
 function getLastUserMessage(history) {
-    for (
-        let index = history.length - 1;
-        index >= 0;
-        index--
-    ) {
+    for (let index = history.length - 1; index >= 0; index -= 1) {
         if (history[index].role === "user") {
             return history[index].content;
         }
@@ -437,64 +194,182 @@ function getLastUserMessage(history) {
 }
 
 // =================================
-// CHAT API
+// llama-server
 // =================================
+
+function startLlamaServer() {
+    if (llamaProcess || llamaStarting) {
+        return;
+    }
+
+    if (!fs.existsSync(LLAMA_SERVER_PATH)) {
+        lastLlamaError =
+            `llama-server bulunamadı: ${LLAMA_SERVER_PATH}`;
+        console.error(`❌ ${lastLlamaError}`);
+        return;
+    }
+
+    llamaStarting = true;
+    llamaReady = false;
+    lastLlamaError = null;
+
+    const args = [
+        "-hf", MODEL_REFERENCE,
+        "--host", LLAMA_HOST,
+        "--port", String(LLAMA_PORT),
+        "--ctx-size", String(LLAMA_CONTEXT_SIZE),
+        "--threads", String(LLAMA_THREADS),
+        "--threads-batch", String(LLAMA_THREADS),
+        "--parallel", "1",
+        "--batch-size", "32",
+        "--ubatch-size", "16",
+        "--no-mmap",
+        "--mlock", "0"
+    ];
+
+    console.log("🦙 llama-server başlatılıyor...");
+    console.log(`🤖 Model: ${MODEL_REFERENCE}`);
+
+    llamaProcess = spawn(LLAMA_SERVER_PATH, args, {
+        cwd: __dirname,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+            ...process.env,
+            LLAMA_CACHE:
+                process.env.LLAMA_CACHE || "/tmp/llama-cache"
+        }
+    });
+
+    llamaProcess.stdout.on("data", (data) => {
+        const text = data.toString().trim();
+        if (text) console.log(`[LLAMA] ${text}`);
+    });
+
+    llamaProcess.stderr.on("data", (data) => {
+        const text = data.toString().trim();
+        if (text) console.log(`[LLAMA] ${text}`);
+    });
+
+    llamaProcess.on("error", (error) => {
+        lastLlamaError = error.message;
+        llamaProcess = null;
+        llamaReady = false;
+        llamaStarting = false;
+        console.error("❌ llama-server hatası:", error.message);
+    });
+
+    llamaProcess.on("close", (code, signal) => {
+        lastLlamaError =
+            `llama-server kapandı. kod=${code}, sinyal=${signal || "yok"}`;
+        llamaProcess = null;
+        llamaReady = false;
+        llamaStarting = false;
+        console.error(`⚠️ ${lastLlamaError}`);
+    });
+
+    waitForLlama()
+        .then(() => {
+            llamaReady = true;
+            llamaStarting = false;
+            console.log("✅ Yerel coder modeli hazır.");
+        })
+        .catch((error) => {
+            lastLlamaError = error.message;
+            llamaReady = false;
+            llamaStarting = false;
+            console.error("❌ Model hazır olmadı:", error.message);
+        });
+}
+
+async function waitForLlama() {
+    const attempts = 180;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        try {
+            const response = await fetch(`${LLAMA_API_URL}/health`, {
+                signal: AbortSignal.timeout(2500)
+            });
+
+            if (response.ok) {
+                return;
+            }
+        } catch {
+            // İndirme/yükleme devam ediyor olabilir.
+        }
+
+        if (attempt % 10 === 0) {
+            console.log(`⏳ Model bekleniyor: ${attempt}/${attempts}`);
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    throw new Error("llama-server zamanında hazır olmadı.");
+}
+
+// =================================
+// API
+// =================================
+
+app.get("/health", (_req, res) => {
+    res.status(200).json({
+        status: "ok",
+        modelReady: llamaReady
+    });
+});
+
+app.get("/api/status", (_req, res) => {
+    res.json({
+        server: "online",
+        modelReady: llamaReady,
+        modelStarting: llamaStarting,
+        model: MODEL_REFERENCE,
+        contextSize: LLAMA_CONTEXT_SIZE,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        knowledgeLines: codeKnowledgeLines.length,
+        lastError: lastLlamaError
+    });
+});
 
 app.post("/api/chat", async (req, res) => {
     try {
-        const { history } = req.body;
+        const history = req.body?.history;
 
-        if (
-            !Array.isArray(history) ||
-            history.length === 0
-        ) {
+        if (!Array.isArray(history) || history.length === 0) {
             return res.status(400).json({
-                error:
-                    "Geçerli bir sohbet geçmişi gönderilmedi."
+                error: "Geçerli bir sohbet geçmişi gönderilmedi."
             });
         }
 
         if (!llamaReady) {
             return res.status(503).json({
-                error:
-                    "Yerel model henüz indiriliyor veya yükleniyor.",
-                loading: true
+                error: "Model henüz indiriliyor veya yükleniyor.",
+                loading: true,
+                details: lastLlamaError
             });
         }
 
-        const recentHistory =
-            sanitizeHistory(history);
+        const recentHistory = sanitizeHistory(history);
 
         if (recentHistory.length === 0) {
             return res.status(400).json({
-                error:
-                    "Geçerli kullanıcı mesajı bulunamadı."
+                error: "Geçerli kullanıcı mesajı bulunamadı."
             });
         }
 
-        const lastUserMessage =
-            getLastUserMessage(recentHistory);
-
-        const relevantKnowledge =
-            findRelevantKnowledge(lastUserMessage);
-
-        const systemPrompt =
-            createSystemPrompt(relevantKnowledge);
+        const lastUserMessage = getLastUserMessage(recentHistory);
+        const knowledge = findRelevantKnowledge(lastUserMessage);
 
         const messages = [
             {
                 role: "system",
-                content: systemPrompt
+                content: createSystemPrompt(knowledge)
             },
             ...recentHistory
         ];
 
-        const controller =
-            new AbortController();
-
-        const timeout = setTimeout(() => {
-            controller.abort();
-        }, 120000);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 120000);
 
         let response;
 
@@ -503,60 +378,48 @@ app.post("/api/chat", async (req, res) => {
                 `${LLAMA_API_URL}/v1/chat/completions`,
                 {
                     method: "POST",
-
                     headers: {
-                        "Content-Type":
-                            "application/json"
+                        "Content-Type": "application/json"
                     },
-
                     body: JSON.stringify({
                         model: MODEL_REFERENCE,
                         messages,
-
-                        temperature: 0.4,
+                        temperature: 0.35,
                         top_p: 0.9,
-                        top_k: 40,
-
-                        max_tokens:
-                            MAX_OUTPUT_TOKENS,
-
+                        max_tokens: MAX_OUTPUT_TOKENS,
                         stream: false
                     }),
-
                     signal: controller.signal
                 }
             );
         } finally {
-            clearTimeout(timeout);
+            clearTimeout(timer);
         }
 
-        const rawText = await response.text();
-
+        const raw = await response.text();
         let result;
 
         try {
-            result = JSON.parse(rawText);
+            result = JSON.parse(raw);
         } catch {
             throw new Error(
-                `llama-server geçersiz cevap döndürdü: ${rawText.slice(0, 300)}`
+                `llama-server JSON olmayan cevap verdi: ${raw.slice(0, 300)}`
             );
         }
 
         if (!response.ok) {
             throw new Error(
-                result.error?.message ||
-                result.error ||
-                `Yerel model hatası: HTTP ${response.status}`
+                result?.error?.message ||
+                result?.error ||
+                `HTTP ${response.status}`
             );
         }
 
         const reply =
-            result.choices?.[0]?.message?.content?.trim();
+            result?.choices?.[0]?.message?.content?.trim();
 
         if (!reply) {
-            throw new Error(
-                "Model boş cevap döndürdü."
-            );
+            throw new Error("Model boş cevap döndürdü.");
         }
 
         return res.json({
@@ -566,78 +429,20 @@ app.post("/api/chat", async (req, res) => {
             usage: result.usage || null
         });
     } catch (error) {
-        console.error(
-            "❌ Chat hatası:",
-            error
-        );
+        console.error("❌ Chat hatası:", error);
 
         if (error.name === "AbortError") {
             return res.status(504).json({
-                error:
-                    "Yerel model zaman aşımına uğradı."
+                error: "Model zaman aşımına uğradı."
             });
         }
 
         return res.status(500).json({
-            error:
-                "Yerel model cevap üretirken hata oluştu.",
+            error: "Yerel model cevap üretirken hata oluştu.",
             details: error.message
         });
     }
 });
-
-// =================================
-// DURUM API
-// =================================
-
-app.get("/api/status", (req, res) => {
-    res.json({
-        server: "online",
-        modelReady: llamaReady,
-        modelStarting: llamaStarting,
-        model: MODEL_REFERENCE,
-        contextSize: LLAMA_CONTEXT_SIZE,
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-        knowledgeLines: codeKnowledgeLines.length
-    });
-});
-
-// =================================
-// HEALTH CHECK
-// =================================
-
-app.get("/health", (req, res) => {
-    res.status(200).json({
-        status: "ok",
-        modelReady: llamaReady
-    });
-});
-
-// =================================
-// KAPATMA
-// =================================
-
-function shutdown(signal) {
-    console.log(`\n🛑 ${signal} alındı.`);
-
-    if (llamaProcess) {
-        llamaProcess.kill("SIGTERM");
-    }
-
-    process.exit(0);
-}
-
-process.on("SIGTERM", () =>
-    shutdown("SIGTERM")
-);
-
-process.on("SIGINT", () =>
-    shutdown("SIGINT")
-);
-
-// =================================
-// SERVER BAŞLATMA
-// =================================
 
 app.listen(PORT, "0.0.0.0", () => {
     console.log(`
@@ -650,10 +455,22 @@ Model            : ${MODEL_REFERENCE}
 Context          : ${LLAMA_CONTEXT_SIZE}
 Maksimum çıktı   : ${MAX_OUTPUT_TOKENS}
 Groq API         : Kullanılmıyor
-API anahtarı     : Gerekmiyor
 Durum            : Express hazır
 ========================================
-    `);
+`);
 
     startLlamaServer();
 });
+
+function shutdown(signal) {
+    console.log(`🛑 ${signal} alındı.`);
+
+    if (llamaProcess) {
+        llamaProcess.kill("SIGTERM");
+    }
+
+    process.exit(0);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

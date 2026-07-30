@@ -1,18 +1,18 @@
 {
   "name": "java-ai-local-coder",
   "version": "1.0.0",
-  "description": "Groq kullanmadan çalışan yerel 360M GGUF coder chatbot",
+  "private": true,
+  "description": "Render üzerinde llama.cpp ve küçük GGUF coder model kullanan Express uygulaması",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": "22.x"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "dotenv": "^16.4.7",
     "express": "^4.21.2"
   }
 }

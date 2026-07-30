@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: java-ai-local-coder
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: MODEL_REPOSITORY
+        value: mradermacher/SolaraV2-coder-GGUF
+      - key: MODEL_QUANT
+        value: Q2_K
+      - key: LLAMA_CONTEXT_SIZE
+        value: "768"
+      - key: LLAMA_THREADS
+        value: "1"
+      - key: MAX_OUTPUT_TOKENS
+        value: "192"
+      - key: MAX_HISTORY_MESSAGES
+        value: "6"
